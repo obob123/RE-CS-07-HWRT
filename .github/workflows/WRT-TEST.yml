@@ -13,6 +13,7 @@ on:
         options:
           - IPQ60XX-WIFI-NO
           - TEST
+          - MEDIATEK
       SOURCE:
         default: 'VIKINGYFY/immortalwrt'
         required: true
