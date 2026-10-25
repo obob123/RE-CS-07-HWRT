@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 VIKINGYFY
+
 #云编译公用核心
 name: WRT-CORE
 
@@ -13,6 +16,12 @@ on:
       WRT_NAME:
         required: true
         type: string
+      WRT_SSID:
+        required: true
+        type: string
+      WRT_WORD:
+        required: true
+        type: string
       WRT_IP:
         required: true
         type: string
@@ -26,7 +35,7 @@ on:
         required: true
         type: string
       WRT_SOURCE:
-        required: true
+        required: false
         type: string
       WRT_PACKAGE:
         required: false
@@ -34,28 +43,55 @@ on:
       WRT_TEST:
         required: false
         type: string
-
+      CI_NAME:
+        required: false
+        type: string
+      WRT_ARCH:
+        required: false
+        type: string
 env:
   GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
   WRT_CONFIG: ${{inputs.WRT_CONFIG}}
   WRT_THEME: ${{inputs.WRT_THEME}}
   WRT_NAME: ${{inputs.WRT_NAME}}
+  WRT_SSID: ${{inputs.WRT_SSID}}
+  WRT_WORD: ${{inputs.WRT_WORD}}
   WRT_IP: ${{inputs.WRT_IP}}
   WRT_PW: ${{inputs.WRT_PW}}
   WRT_REPO: ${{inputs.WRT_REPO}}
   WRT_BRANCH: ${{inputs.WRT_BRANCH}}
-  WRT_SOURCE: ${{inputs.WRT_SOURCE}}
   WRT_PACKAGE: ${{inputs.WRT_PACKAGE}}
   WRT_TEST: ${{inputs.WRT_TEST}}
+  WRT_DIR: 'wrt'
+  CI_NAME: ${{inputs.CI_NAME}}
+  WRT_ARCH: ${{inputs.WRT_ARCH}}
 
 jobs:
   core:
     name: ${{inputs.WRT_SOURCE}}
     runs-on: ubuntu-latest
     steps:
+      - name: Install BC
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt -yqq install bc
+
+      - name: Free Disk Space
+        uses: endersonmenezes/free-disk-space@v2
+        with:
+          remove_android: true
+          remove_dotnet: true
+          remove_haskell: true
+          remove_tool_cache: true
+          remove_swap: true
+          remove_packages: "azure-cli google-cloud-cli microsoft-edge-stable google-chrome-stable firefox postgresql* temurin-* *llvm* mysql* dotnet-sdk-*"
+          remove_packages_one_command: true
+          remove_folders: "/usr/share/swift /usr/share/miniconda /usr/share/az* /usr/share/glade* /usr/local/share/chromium /usr/local/share/powershell"
+          testing: false
+
       - name: Checkout Projects
         uses: actions/checkout@main
-
       - name: Initialization Environment
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -67,13 +103,26 @@ jobs:
           sudo -E apt -yqq autoclean
           sudo -E apt -yqq clean
           sudo -E apt -yqq install dos2unix python3-netifaces libfuse-dev
-          sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+          dos2unix "$GITHUB_WORKSPACE/Scripts/init_build_environment.sh"
+          sudo bash "$GITHUB_WORKSPACE/Scripts/init_build_environment.sh"
           sudo -E systemctl daemon-reload
           sudo -E timedatectl set-timezone "Asia/Shanghai"
+          if command -v go >/dev/null 2>&1; then
+            echo "GO_INSTALLED=true" >> "$GITHUB_ENV"
+          else
+            echo "GO_INSTALLED=false" >> "$GITHUB_ENV"
+          fi
+#          sudo chown $USER:$GROUPS $GITHUB_WORKSPACE
+#          sudo mkdir -p /mnt/build_wrt
+#          sudo chown $USER:$USER /mnt/build_wrt
+#          sudo ln -s /mnt/build_wrt $GITHUB_WORKSPACE/wrt
 
-          sudo mkdir -p /mnt/build_wrt
-          sudo chown $USER:$USER /mnt/build_wrt
-          sudo ln -s /mnt/build_wrt $GITHUB_WORKSPACE/wrt
+      - name: Setup Go
+        if: env.GO_INSTALLED != 'true'
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+      - run: go version
 
       - name: Initialization Values
         run: |
@@ -83,59 +132,54 @@ jobs:
           echo "WRT_TARGET=$(grep -m 1 -oP '^CONFIG_TARGET_\K[\w]+(?=\=y)' ./Config/$WRT_CONFIG.txt)" >> $GITHUB_ENV
           echo "WRT_KVER=none" >> $GITHUB_ENV
           echo "WRT_LIST=none" >> $GITHUB_ENV
-          echo "WRT_MODS=none" >> $GITHUB_ENV
 
+          echo "WRT_CI=$WRT_CI" >> $GITHUB_ENV
+          [[ -z $WRT_ARCH ]] && {
+            export WRT_ARCH=$(sed -n 's/.*_DEVICE_\(.*\)_DEVICE_.*/\1/p' $GITHUB_WORKSPACE/Config/$WRT_CONFIG.txt | head -n 1)
+            echo "WRT_ARCH=$WRT_ARCH" >> $GITHUB_ENV
+          }
+          echo "$WRT_REPO/$WRT_BRANCH" > "$GITHUB_WORKSPACE/repo_flag"
       - name: Clone Code
         run: |
           git clone --depth=1 --single-branch --branch $WRT_BRANCH $WRT_REPO ./wrt/
 
           cd ./wrt/ && echo "WRT_HASH=$(git log -1 --pretty=format:'%h')" >> $GITHUB_ENV
+#############################测试代码####
+      - name: Update Dae/Daed rules
+        run: |
+         cd ./wrt
+         mkdir -p files/usr/share/dae
+         wget -O files/usr/share/dae/geoip.dat https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
+         wget -O files/usr/share/dae/geosite.dat https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat
+         cd files/usr/share
+         ln -s dae daed
+         ls -l
 
-          # GitHub Action 移除国内下载源
-          PROJECT_MIRRORS_FILE="./scripts/projectsmirrors.json"
-          if [ -f "$PROJECT_MIRRORS_FILE" ]; then
-            sed -i '/.cn\//d; /tencent/d; /aliyun/d' "$PROJECT_MIRRORS_FILE"
-          fi
 
+#############################测试代码####
       - name: Check Scripts
         run: |
           find ./ -maxdepth 3 -type f -iregex ".*\(txt\|sh\)$" -exec dos2unix {} \; -exec chmod +x {} \;
 
-      - name: Check Caches
-        id: check-cache
-        if: env.WRT_TEST != 'true'
-        uses: actions/cache@main
+      - name: Cache Dependencies
+        uses: actions/cache@v4
         with:
-          key: ${{env.WRT_CONFIG}}-${{env.WRT_INFO}}-${{env.WRT_HASH}}
-          restore-keys: ${{env.WRT_CONFIG}}-${{env.WRT_INFO}}
           path: |
             ./wrt/.ccache
-            ./wrt/staging_dir/host*
-            ./wrt/staging_dir/tool*
+            ./wrt/staging_dir
+          key: ${{ env.WRT_ARCH }}-${{ hashFiles('**/repo_flag') }}-${{ env.WRT_DATE }}
+          restore-keys: |
+            ${{ env.WRT_ARCH }}-${{ hashFiles('**/repo_flag') }}-
 
-      - name: Update Caches
-        if: env.WRT_TEST != 'true'
+      - name: Refresh the cache
         run: |
           if [ -d "./wrt/staging_dir" ]; then
-            find "./wrt/staging_dir" -type d -name "stamp" -not -path "*target*" | while read -r DIR; do
-              find "$DIR" -type f -exec touch {} +
+            find "./wrt/staging_dir" -type d -name "stamp" -not -path "*target*" | while read -r dir; do
+                find "$dir" -type f -exec touch {} +
             done
+          fi            
 
-            mkdir -p ./wrt/tmp && echo "1" > ./wrt/tmp/.build
 
-            echo "toolchain skiped done!"
-          else
-            echo "caches missed!"
-          fi
-
-          if ${{steps.check-cache.outputs.cache-hit != 'true'}}; then
-            CACHE_LIST=$(gh cache list --key "$WRT_CONFIG-$WRT_INFO" | cut -f 1)
-            for CACHE_KEY in $CACHE_LIST; do
-              gh cache delete $CACHE_KEY
-            done
-
-            echo "caches cleanup done!"
-          fi
 
       - name: Update Feeds
         run: |
@@ -153,84 +197,55 @@ jobs:
 
       - name: Custom Settings
         run: |
+          . $GITHUB_WORKSPACE/Scripts/function.sh
           cd ./wrt/
-
-          if [[ "${WRT_CONFIG,,}" == *"test"* ]]; then
-            cat $GITHUB_WORKSPACE/Config/$WRT_CONFIG.txt >> .config
-          else
-            cat $GITHUB_WORKSPACE/Config/$WRT_CONFIG.txt $GITHUB_WORKSPACE/Config/GENERAL.txt >> .config
-          fi
-
+          
+          generate_config && cat .config
+          
           $GITHUB_WORKSPACE/Scripts/Settings.sh
 
           make defconfig -j$(nproc) && make clean -j$(nproc)
-          
+
       - name: Download Packages
         if: env.WRT_TEST != 'true'
         run: |
           cd ./wrt/
-          sed -i 's|3ec87f221e8905d4b6b8b3d207b7f7c4666c3bc8db7c1f06d4ae2e78f863b8f4|881cbf75efafe380b5adc91bfb1f68add5e29c9274eb950bb1e815c7a3622807|g' feeds/nss_packages/firmware/nss-firmware/Makefile
 
           make download -j$(nproc)
-
-      - name: System Resources Check
+# #############################测试代码####
+          
+#       - name: Update Dae Core/Config
+#         run: |
+#           cd ./wrt/
+#           wget -O dae.zip https://github.com/daeuniverse/dae/releases/download/v2.0.0/dae-linux-arm64.zip
+#           unzip -j dae.zip dae-linux-arm64
+#           mkdir -p files/usr/bin
+#           mv dae-linux-arm64 files/usr/bin/dae
+#           chmod +x files/usr/bin/dae
+#           rm -f dae.zip
+                    
+#           #chmod 600 build_dir/target-*/root-*/etc/dae/config.dae
+#           #ls -l build_dir/target-*/root-*/etc/dae/config.dae
+          
+        
+# #############################测试代码####  
+      - name: Compile Firmware
         if: env.WRT_TEST != 'true'
         run: |
           cd ./wrt/
-          echo "=== System Resources Before Build ==="
-          df -h
-          free -h
 
-      - name: Compile Tools
-        if: env.WRT_TEST != 'true'
-        run: |
-          cd ./wrt/
-          echo "=== Compiling Tools ==="
-          make tools/compile -j$(nproc) V=s
+          make -j$(nproc) || make -j1 V=s
 
-      - name: Compile Toolchain
-        if: env.WRT_TEST != 'true'
+      - name: Delete Old Cache
         run: |
-          cd ./wrt/
-          echo "=== Compiling Toolchain ==="
-          make toolchain/compile -j$(nproc) V=s
-
-      - name: Compile Target
-        if: env.WRT_TEST != 'true'
-        run: |
-          cd ./wrt/
-          echo "=== Compiling Target ==="
-          make target/compile -j$(nproc) V=s
-
-      - name: Compile Packages
-        if: env.WRT_TEST != 'true'
-        run: |
-          cd ./wrt/
-          echo "=== Compiling Packages (Serial Mode) ==="
-          # 使用串行编译避免并行竞争问题
-          make package/compile -j1 V=s
-
-      - name: Install Packages
-        if: env.WRT_TEST != 'true'
-        run: |
-          cd ./wrt/
-          echo "=== Installing Packages ==="
-          make package/install -j$(nproc) V=s
-
-      - name: Install Target
-        if: env.WRT_TEST != 'true'
-        run: |
-          cd ./wrt/
-          echo "=== Installing Target ==="
-          make target/install -j$(nproc) V=s
-
-      - name: Generate Package Index
-        if: env.WRT_TEST != 'true'
-        run: |
-          cd ./wrt/
-          echo "=== Generating Package Index ==="
-          make package/index V=s
-          echo "=== Build Completed Successfully ==="
+          # 获取缓存列表并删除
+          gh cache list --key ${{ env.WRT_ARCH }}-${{ hashFiles('**/repo_flag') }}- --json key --jq '.[] | .key' | while read -r key; do
+            gh cache delete "$key"
+          done
+          # 输出缓存状态
+          echo "========cache status========"
+          echo "ccache: $(du -sh ./wrt/.ccache | cut -f 1)"
+          echo "staging: $(du -sh ./wrt/staging_dir | cut -f 1)"
 
       - name: Machine Information
         run: |
@@ -246,34 +261,40 @@ jobs:
 
       - name: Package Firmware
         run: |
-          cd ./wrt/ && mkdir -p ./upload/
-          cp -f ./.config ./upload/Config-"$WRT_CONFIG"-JDCloud_RE-CS-07-"$WRT_NAME"-"$WRT_DATE".txt
+          cd ./wrt/ && mkdir ./upload/
+
+          cp -f ./.config ./upload/Config-"$WRT_CONFIG"-"$WRT_INFO"-"$WRT_BRANCH"-"$WRT_DATE".txt
 
           if [[ $WRT_TEST != 'true' ]]; then
-            echo "WRT_KVER=$(find ./bin/targets/ -type f -name "*.manifest" -exec grep -oP '^kernel - \K[\d\.]+' {} \; | head -1)" >> $GITHUB_ENV
-            echo "WRT_LIST=$(find ./bin/targets/ -type f -name "*.manifest" -exec grep -oP '^luci-(app|theme)[^ ]*' {} \; | sort -u | tr '\n' ' ')" >> $GITHUB_ENV
-            # 获取已编译固件（CONFIG_PACKAGE_xxx=m）
-            echo "WRT_MODS=$(grep '^CONFIG_PACKAGE_luci-\(app\|theme\)[^=]*=m$' ./.config | sed 's/^CONFIG_PACKAGE_//g; s/=m$//g' | sort | tr '\n' ' ')" >> $GITHUB_ENV
+            echo "WRT_KVER=$(find ./bin/targets/ -type f -name "*.manifest" -exec grep -oP '^kernel - \K[\d\.]+' {} \;)" >> $GITHUB_ENV
+            echo "WRT_LIST=$(find ./bin/targets/ -type f -name "*.manifest" -exec grep -oP '^luci-(app|theme)[^ ]*' {} \; | tr '\n' ' ')" >> $GITHUB_ENV
 
-            # 复制固件文件（不包括packages子目录中的文件）
-            for FILE in ./bin/targets/*/*/*; do
-             [ -f "$FILE" ] && cp "$FILE" ./upload/
+            find ./bin/targets/ -iregex ".*\(buildinfo\|json\|sha256sums\|packages\)$" -exec rm -rf {} +
+
+            for FILE in $(find ./bin/targets/ -type f -iname "*$WRT_TARGET*") ; do
+              EXT=$(basename $FILE | cut -d '.' -f 2-)
+              NAME=$(basename $FILE | cut -d '.' -f 1 | grep -io "\($WRT_TARGET\).*")
+              NEW_FILE="$NAME"-"$WRT_DATE"."$EXT"
+              mv -f $FILE ./upload/$NEW_FILE
             done
 
-            # 直接打包整个bin目录
-            [ -d ./bin/ ] && tar -czf ./upload/immortalwrt-"$WRT_CONFIG"-JDCloud_RE-CS-07-"$WRT_NAME"-"$WRT_DATE".tar.gz -C . bin/
+            find ./bin/targets/ -type f -exec mv -f {} ./upload/ \;
+
             make clean -j$(nproc)
           fi
 
       - name: Release Firmware
         uses: softprops/action-gh-release@master
         with:
-          tag_name: Immortalwrt-${{env.WRT_CONFIG}}-JDCloud_RE-CS-07-${{env.WRT_NAME}}-${{env.WRT_DATE}}
+          tag_name: ${{env.CI_NAME}}-${{env.WRT_CONFIG}}_${{env.WRT_DATE}}
           files: ./wrt/upload/*.*
           body: |
-            这是高通IPQ60X平台，京东云JDCloud RE-CS-07固件包！
-            带开源NSS硬件加速！
-            
+            这是个平台固件包，内含多个设备！
+            请注意选择你需要的设备固件！
+            不要问，刷就完事了！
+
+            全系带开源硬件加速，别问了！
+
             源码：${{env.WRT_REPO}}
             分支：${{env.WRT_BRANCH}}
             提交：${{env.WRT_HASH}}
@@ -288,5 +309,4 @@ jobs:
             WIFI密码：${{env.WRT_WORD}}
 
             内核版本：${{env.WRT_KVER}}
-            固件已集成插件：${{env.WRT_LIST}}
-            已编译未集成的插件：${{env.WRT_MODS}}
+            插件列表：${{env.WRT_LIST}}
