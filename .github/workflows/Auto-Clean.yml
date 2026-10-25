@@ -1,25 +1,35 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 VIKINGYFY
+
 name: Auto-Clean
 
+#CI计划
 on:
-  #自动清理：每隔2天凌晨 4:00
-  #schedule:
-  #  - cron: 0 20 */2 * *
-    #- cron: 0 20 * * *
+  #自动编译：当cache-Clean运行完成后
+  workflow_run:
+    workflows: ["Cache-Clean"]
+    types:
+      - completed
   #手动清理
   workflow_dispatch:
+    inputs:
+      NUMBER:
+        default: '8'
+        required: false
+        type: string
 
 permissions: write-all
 
 jobs:
   auto_clean:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Delete old Releases and Workflows
         uses: ophub/delete-releases-workflows@main
         with:
           gh_token: ${{secrets.GITHUB_TOKEN}}
           delete_releases: true
-          releases_keep_latest: 9
+          releases_keep_latest: ${{inputs.NUMBER || '0'}}
           delete_tags: true
           delete_workflows: true
           workflows_keep_day: 0
